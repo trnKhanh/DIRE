@@ -35,7 +35,9 @@ def reshape_image(imgs: torch.Tensor, image_size: int) -> torch.Tensor:
         crop_func = transforms.CenterCrop(image_size)
         imgs = crop_func(imgs)
     if imgs.shape[2] != image_size:
-        imgs = F.interpolate(imgs, size=(image_size, image_size), mode="bicubic")
+        imgs = F.interpolate(
+            imgs, size=(image_size, image_size), mode="bicubic"
+        )
     return imgs
 
 
@@ -49,8 +51,13 @@ def main():
     os.makedirs(args.dire_dir, exist_ok=True)
     logger.log(str(args))
 
-    model, diffusion = create_model_and_diffusion(**args_to_dict(args, model_and_diffusion_defaults().keys()))
-    model.load_state_dict(dist_util.load_state_dict(args.model_path, map_location="cpu"))
+    model, diffusion = create_model_and_diffusion(
+        **args_to_dict(args, model_and_diffusion_defaults().keys())
+    )
+    print(args_to_dict(args, model_and_diffusion_defaults().keys()))
+    model.load_state_dict(
+        dist_util.load_state_dict(args.model_path, map_location="cpu")
+    )
     model.to(dist_util.dev())
     logger.log("have created model and diffusion")
     if args.use_fp16:
@@ -58,17 +65,24 @@ def main():
     model.eval()
 
     data = load_data_for_reverse(
-        data_dir=args.images_dir, batch_size=args.batch_size, image_size=args.image_size, class_cond=args.class_cond
+        data_dir=args.images_dir,
+        batch_size=args.batch_size,
+        image_size=args.image_size,
+        class_cond=args.class_cond,
     )
     logger.log("have created data loader")
 
     logger.log("computing recons & DIRE ...")
     have_finished_images = 0
     while have_finished_images < args.num_samples:
-        if (have_finished_images + MPI.COMM_WORLD.size * args.batch_size) > args.num_samples and (
+        if (
+            have_finished_images + MPI.COMM_WORLD.size * args.batch_size
+        ) > args.num_samples and (
             args.num_samples - have_finished_images
         ) % MPI.COMM_WORLD.size == 0:
-            batch_size = (args.num_samples - have_finished_images) // MPI.COMM_WORLD.size
+            batch_size = (
+                args.num_samples - have_finished_images
+            ) // MPI.COMM_WORLD.size
         else:
             batch_size = args.batch_size
         all_images = []
@@ -80,11 +94,17 @@ def main():
         imgs = imgs.to(dist_util.dev())
         model_kwargs = {}
         if args.class_cond:
-            classes = th.randint(low=0, high=NUM_CLASSES, size=(batch_size,), device=dist_util.dev())
+            classes = th.randint(
+                low=0,
+                high=NUM_CLASSES,
+                size=(batch_size,),
+                device=dist_util.dev(),
+            )
             model_kwargs["y"] = classes
         reverse_fn = diffusion.ddim_reverse_sample_loop
         imgs = reshape_image(imgs, args.image_size)
-
+        
+        print(imgs.type)
         latent = reverse_fn(
             model,
             (batch_size, 3, args.image_size, args.image_size),
@@ -93,7 +113,11 @@ def main():
             model_kwargs=model_kwargs,
             real_step=args.real_step,
         )
-        sample_fn = diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+        sample_fn = (
+            diffusion.p_sample_loop
+            if not args.use_ddim
+            else diffusion.ddim_sample_loop
+        )
         recons = sample_fn(
             model,
             (batch_size, 3, args.image_size, args.image_size),
@@ -116,21 +140,33 @@ def main():
         dire = dire.permute(0, 2, 3, 1)
         dire = dire.contiguous()
 
-        gathered_samples = [th.zeros_like(recons) for _ in range(dist.get_world_size())]
-        dist.all_gather(gathered_samples, recons)  # gather not supported with NCCL
+        gathered_samples = [
+            th.zeros_like(recons) for _ in range(dist.get_world_size())
+        ]
+        dist.all_gather(
+            gathered_samples, recons
+        )  # gather not supported with NCCL
 
         all_images.extend([sample.cpu().numpy() for sample in gathered_samples])
         if args.class_cond:
-            gathered_labels = [th.zeros_like(classes) for _ in range(dist.get_world_size())]
+            gathered_labels = [
+                th.zeros_like(classes) for _ in range(dist.get_world_size())
+            ]
             dist.all_gather(gathered_labels, classes)
-            all_labels.extend([labels.cpu().numpy() for labels in gathered_labels])
+            all_labels.extend(
+                [labels.cpu().numpy() for labels in gathered_labels]
+            )
         have_finished_images += len(all_images) * batch_size
         # print(th.mean(res.float()))
         recons = recons.cpu().numpy()
         for i in range(len(recons)):
             if args.has_subfolder:
-                recons_save_dir = os.path.join(args.recons_dir, paths[i].split("/")[-2])
-                dire_save_dir = os.path.join(args.dire_dir, paths[i].split("/")[-2])
+                recons_save_dir = os.path.join(
+                    args.recons_dir, paths[i].split("/")[-2]
+                )
+                dire_save_dir = os.path.join(
+                    args.dire_dir, paths[i].split("/")[-2]
+                )
             else:
                 recons_save_dir = args.recons_dir
                 dire_save_dir = args.dire_dir
@@ -138,9 +174,15 @@ def main():
             os.makedirs(recons_save_dir, exist_ok=True)
             os.makedirs(dire_save_dir, exist_ok=True)
             cv2.imwrite(
-                f"{dire_save_dir}/{fn_save}", cv2.cvtColor(dire[i].cpu().numpy().astype(np.uint8), cv2.COLOR_RGB2BGR)
+                f"{dire_save_dir}/{fn_save}",
+                cv2.cvtColor(
+                    dire[i].cpu().numpy().astype(np.uint8), cv2.COLOR_RGB2BGR
+                ),
             )
-            cv2.imwrite(f"{recons_save_dir}/{fn_save}", cv2.cvtColor(recons[i].astype(np.uint8), cv2.COLOR_RGB2BGR))
+            cv2.imwrite(
+                f"{recons_save_dir}/{fn_save}",
+                cv2.cvtColor(recons[i].astype(np.uint8), cv2.COLOR_RGB2BGR),
+            )
         logger.log(f"have finished {have_finished_images} samples")
 
     dist.barrier()
